@@ -156,7 +156,11 @@ python main.py
 
 **Secrets required in GCP Secret Manager**
 - `leathwaite-ai-sf-prod`
-  - Expected keys: `username`, `password`, `token`, `domain`
+  - Expected keys (OAuth 2.0 Client Credentials, REST API): `consumer_key`, `consumer_secret`, `domain`
+    - aliases accepted: `client_id`, `client_secret`, `my_domain`
+    - `domain` must be the org My Domain prefix, e.g. `leathwaite.my` (sandbox: `leathwaite--uat.sandbox.my`), not `login`/`test`
+  - Legacy keys `username`, `password`, `token` are only used as a temporary SOAP `login()` fallback when the OAuth keys are missing; remove after cutover
+  - Optional env var `SF_API_VERSION` (default `59.0`)
 - `leathwaite`
   - Expected keys: `tenant_id`, `client_id`, `client_secret`
 
