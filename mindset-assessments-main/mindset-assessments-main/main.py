@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import time
 import traceback
@@ -83,8 +84,114 @@ report_file_name = "report_results.xlsx"
 # Tracks whether any step failed during a full run.
 script_error = False
 
-# Authenticated Salesforce session for Lighthouse updates.
-sf = Salesforce(username=sf_creds['username'], password=sf_creds['password'], security_token=sf_creds['token'], domain=sf_creds['domain'])
+# ---------------------------------------------------------------------------
+# Salesforce authentication (OAuth 2.0 Client Credentials over REST)
+# ---------------------------------------------------------------------------
+
+# REST API version used for every /services/data/vXX.X/ call. Pinned explicitly
+# (simple-salesforce's default changes between releases). Kept at 59.0 for the
+# auth cutover so the data path is unchanged; bump separately after testing.
+SF_API_VERSION = os.getenv("SF_API_VERSION", "59.0")
+
+# OAuth 2.0 Client Credentials keys in secret leathwaite-ai-sf-prod.
+# First name is canonical, the rest are accepted aliases (first non-empty wins).
+SF_OAUTH_KEYS = {
+	"consumer_key": ("consumer_key", "client_id"),
+	"consumer_secret": ("consumer_secret", "client_secret"),
+	"domain": ("domain", "my_domain"),
+}
+# Legacy SOAP login() keys (lower-case only; e.g. "Username" is ignored).
+SF_LEGACY_SOAP_KEYS = ("username", "password", "token")
+
+# My Domain prefix as used by simple-salesforce: "<name>.my" for production,
+# "<name>--<sandbox>.sandbox.my" for sandboxes. Never "login" or "test".
+_SF_MY_DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.sandbox)?\.my$")
+
+
+class SalesforceConfigError(RuntimeError):
+	"""Salesforce secret is missing keys or has invalid values. Never includes secret values."""
+
+
+def _sf_cred(sf_creds, names):
+	"""Return the first non-empty value for any of the given key names (exact, case-sensitive)."""
+	for name in names:
+		value = sf_creds.get(name)
+		if isinstance(value, str):
+			value = value.strip()
+		if value:
+			return value
+	return None
+
+
+def _sf_validate_my_domain(domain):
+	normalised = domain.strip().lower()
+	if normalised in ("login", "test") or not _SF_MY_DOMAIN_RE.match(normalised):
+		raise SalesforceConfigError(
+			"Salesforce secret key 'domain' (or alias 'my_domain') must be the org My Domain prefix, "
+			"e.g. 'leathwaite.my' (sandbox: 'leathwaite--uat.sandbox.my'). It must not be 'login', 'test', "
+			"a full URL, or include '.salesforce.com'. OAuth Client Credentials does not work against "
+			"login.salesforce.com / test.salesforce.com."
+		)
+	return normalised
+
+
+def sf_connect(sf_creds):
+	"""
+	Return a simple_salesforce client authenticated over OAuth 2.0 (REST).
+
+	Preferred: OAuth 2.0 Client Credentials flow via an External Client App / Connected App.
+	  Secret keys: consumer_key, consumer_secret, domain (e.g. "leathwaite.my")
+	  Aliases:     client_id,    client_secret,   my_domain
+	  Token URL:   https://<domain>.salesforce.com/services/oauth2/token
+
+	Legacy (transition only): SOAP login(), used only if the OAuth keys are not
+	all present AND lower-case username, password and token are all present.
+	SOAP login() is being retired by Salesforce; remove this fallback after cutover.
+
+	Raises SalesforceConfigError naming missing keys. Secret values are never logged.
+	"""
+	if not isinstance(sf_creds, dict):
+		raise SalesforceConfigError("Salesforce secret leathwaite-ai-sf-prod must be a JSON object")
+
+	oauth = {canonical: _sf_cred(sf_creds, names) for canonical, names in SF_OAUTH_KEYS.items()}
+	missing_oauth = [
+		canonical if len(names) == 1 else f"{canonical} (or {' / '.join(names[1:])})"
+		for canonical, names in SF_OAUTH_KEYS.items()
+		if not oauth[canonical]
+	]
+
+	if not missing_oauth:
+		domain = _sf_validate_my_domain(oauth["domain"])
+		log.info(f"SALESFORCE AUTH: OAUTH CLIENT CREDENTIALS (API v{SF_API_VERSION})")
+		return Salesforce(
+			consumer_key=oauth["consumer_key"],
+			consumer_secret=oauth["consumer_secret"],
+			domain=domain,
+			version=SF_API_VERSION,
+		)
+
+	missing_legacy = [k for k in SF_LEGACY_SOAP_KEYS if not _sf_cred(sf_creds, (k,))]
+	if not missing_legacy:
+		log.warning("SALESFORCE AUTH: OAUTH KEYS MISSING, FALLING BACK TO LEGACY SOAP login() (being retired)")
+		return Salesforce(
+			username=_sf_cred(sf_creds, ("username",)),
+			password=_sf_cred(sf_creds, ("password",)),
+			security_token=_sf_cred(sf_creds, ("token",)),
+			domain=_sf_cred(sf_creds, ("domain",)) or "login",
+			version=SF_API_VERSION,
+		)
+
+	raise SalesforceConfigError(
+		"Salesforce secret leathwaite-ai-sf-prod is missing OAuth Client Credentials key(s): "
+		+ ", ".join(missing_oauth)
+		+ ". Legacy SOAP fallback not possible, missing: "
+		+ ", ".join(missing_legacy)
+		+ "."
+	)
+
+
+# Authenticated Salesforce session for Lighthouse updates (REST via OAuth 2.0).
+sf = sf_connect(sf_creds)
 
 def lighthouse_update_candidate_stage(can_details):
 	"""Mark a candidate assessment as completed in Salesforce."""

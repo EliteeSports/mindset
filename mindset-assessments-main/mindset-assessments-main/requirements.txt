@@ -3,7 +3,7 @@ google-cloud-secret-manager
 google-cloud-bigquery
 google-cloud-bigquery_storage
 google-cloud-storage
-simple-salesforce
+simple-salesforce>=1.12.6,<2
 pandas
 reportlab
 aiohttp
