@@ -1,0 +1,12 @@
+bs4
+google-cloud-secret-manager
+google-cloud-bigquery
+google-cloud-bigquery_storage
+google-cloud-storage
+simple-salesforce
+pandas
+reportlab
+aiohttp
+db_dtypes
+py-spy
+openpyxl
